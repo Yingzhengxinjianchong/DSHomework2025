@@ -18,7 +18,7 @@ then
 fi
 
 # counting
-count=$(grep -w -o "${word_to_find}" "${file_name}" | wc -l)
+count=$(grep -i -w -o "${word_to_find}" "${file_name}" | wc -l)
 
 # output
 if [ ${count} -gt 0 ]
