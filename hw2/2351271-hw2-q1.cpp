@@ -14,6 +14,7 @@
 #include <queue>
 #include <memory>
 #include <condition_variable>
+#include <future>
 
 // 学号
 const std::string STUDENT_ID = "2351271";
@@ -26,6 +27,9 @@ const std::string IDX_FILE = STUDENT_ID + "-hw2.idx";
 
 // 记录总数
 const int NUM_RECORDS = 512 * 32 * 8;
+
+// 并行排序的阈值
+const size_t PARALLEL_SORT_THRESHOLD = 4096; 
 
 // 学生记录
 struct StudentRecord {
@@ -295,7 +299,6 @@ void txtConversionWorkerThread(const std::vector<StudentRecord>* all_records)
   }
 }
 
-
 void generateTXT(const std::vector<StudentRecord>& all_records)
 {
   // 创建文件流
@@ -393,6 +396,94 @@ void generateDAT1(const std::vector<StudentRecord>& all_records)
   dat1_file.close();
 }
 
+/* 任务1.3：生成dat2 */
+// 比较器
+template<typename Compare>
+void merge (std::vector<StudentRecord>& vec, std::vector<StudentRecord>& temp_vec,
+            size_t left, size_t mid, size_t right, Compare comp)
+{
+  size_t i = left;
+  size_t j = mid + 1;
+  size_t k = left;
+
+  while (i <= mid && j <= right) {
+    if (comp(vec[i], vec[j])) {
+      temp_vec[k++] = vec[i++];
+    }
+    else {
+      temp_vec[k++] = vec[j++];
+    }
+  }
+
+  while (i <= mid) {
+    temp_vec[k++] = vec[i++];
+  }
+
+  while (j <= right) {
+    temp_vec[k++] = vec[j++];
+  }
+
+  for (i = left; i <= right; ++i){
+    vec[i] = temp_vec[i];
+  }
+};
+
+// 归并排序
+template<typename Compare>
+void mergeSortRecursive (std::vector<StudentRecord>& vec, std::vector<StudentRecord>& temp_vec,
+                        size_t left, size_t right, Compare comp)
+{
+  if (left >= right) {
+    return;
+  }
+
+  size_t mid = (left + right) / 2;
+
+  if (right - left < PARALLEL_SORT_THRESHOLD) {
+    // 数据块小，单线程
+    mergeSortRecursive(vec, temp_vec, left, mid, comp);
+    mergeSortRecursive(vec, temp_vec, mid + 1, right, comp);
+  } 
+  else {
+    // 数据块大，多线程
+    auto future_left = std::async(std::launch::async, &mergeSortRecursive<Compare>,
+                                  std::ref(vec), std::ref(temp_vec), left, mid, comp);
+    // 当前线程同步处理右半部分
+    mergeSortRecursive(vec, temp_vec, mid + 1, right, comp);
+    future_left.get();
+    }
+
+    merge(vec, temp_vec, left, mid, right, comp);
+};
+
+void generateDAT2(const std::vector<StudentRecord>& all_records)
+{
+  std::ofstream dat2_file(DAT2_FILE, std::ios::binary);
+  if (!dat2_file.is_open()) {
+    std::cerr << "错误：无法创建文件" << DAT2_FILE << std::endl;
+    return;
+  }
+
+  std::vector<StudentRecord> sorted_records = all_records;
+  std::vector<StudentRecord> temp_vec(sorted_records.size());
+
+  auto compareStudents = [](const StudentRecord& a, const StudentRecord& b){
+    if (a.chinese != b.chinese) {
+      return a.chinese > b.chinese;
+    }
+    return a.id < b.id;
+  };
+
+  mergeSortRecursive(sorted_records, temp_vec, 0, sorted_records.size()-1, compareStudents);
+
+  dat2_file.write(
+    reinterpret_cast<const char*>(sorted_records.data()),
+    sorted_records.size() * sizeof(StudentRecord)
+  );
+
+  dat2_file.close();
+}
+
 int main()
 {
   // 数据生成
@@ -417,5 +508,15 @@ int main()
             << write_1_2_ms << " = " << (gen_time_ms + write_1_2_ms) << "毫秒" <<
             std::endl;
   std::cout << "---------------------------------------------" << std::endl;
+
+  // 任务1.3
+  Timer timer_1_3;
+  generateDAT2(all_records);
+  double write_1_3_ms = timer_1_3.interval();
+  std::cout << DAT2_FILE << "生成完毕，生成数据+写入文件耗时：" << gen_time_ms << " + "
+            << write_1_3_ms << " = " << (gen_time_ms + write_1_3_ms) << "毫秒" <<
+            std::endl;
+  std::cout << "---------------------------------------------" << std::endl;
+
   return 0;
 }
