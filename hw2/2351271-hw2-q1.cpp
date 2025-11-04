@@ -40,7 +40,7 @@ struct StudentRecord {
 class Timer {
 public:
   Timer() {
-      start_time = std::chrono::steady_clock::now();
+    start_time = std::chrono::steady_clock::now();
   }
 
   void reset() {
@@ -59,7 +59,6 @@ private:
   std::chrono::steady_clock::time_point start_time;
 };
 
-/* 任务1.1：生成txt */
 // 快速写入器
 inline void fast_write_float(std::stringstream& ss, float score)
 {
@@ -80,31 +79,26 @@ float generateGaussianScore(std::mt19937& gen, std::normal_distribution<float>& 
   return score;
 };
 
-// 多线程
+/* 并行生成所有数据 */
 struct WorkBatch {
   int batch_id;
   int start_id;
   int num_records;
 };
 
-struct ResultBatch {
-  int batch_id;
-  std::string data;
-};
+// 生成任务列表
+std::queue<WorkBatch> gen_work_queue;
+std::mutex gen_work_mutex;
+std::condition_variable gen_work_cv;
+bool gen_work_done = false;
 
-// 待办任务
-std::queue<WorkBatch> work_queue;
-std::mutex work_mutex;
-std::condition_variable work_cv;
-bool work_done = false;
+// 生成结果列表
+std::map<int, std::vector<StudentRecord>> gen_finished_work;
+std::mutex gen_finished_mutex;
+std::condition_variable gen_finished_cv;
 
-// 结果
-std::map<int, std::string> finished_work;
-std::mutex finished_mutex;
-std::condition_variable finished_cv;
-
-// 执行工人线程
-void worker_thread()
+// 工人线程，只生成数据
+void generationWorkerThread()
 {
   // 初始化高斯分布
   std::random_device rd;
@@ -116,32 +110,171 @@ void worker_thread()
 
     // 领取任务
     {
-      std::unique_lock<std::mutex> lock(work_mutex);
-      work_cv.wait(lock, []{ return !work_queue.empty()|| work_done;});
+      std::unique_lock<std::mutex> lock(gen_work_mutex);
+      gen_work_cv.wait(lock, []{ return !gen_work_queue.empty()|| gen_work_done;});
 
-      if (work_queue.empty() && work_done) {
+      if (gen_work_queue.empty() && gen_work_done) {
         return;
       }
 
-      batch_to_process = work_queue.front();
-      work_queue.pop();
+      batch_to_process = gen_work_queue.front();
+      gen_work_queue.pop();
     }
 
     // 内存缓冲区
-    std::stringstream buffer_ss;
+    std::vector<StudentRecord> batch_records;
+    batch_records.reserve(batch_to_process.num_records);
     int end_id = batch_to_process.start_id + batch_to_process.num_records;
 
-    // 生成和写入
     for(int id = batch_to_process.start_id; id < end_id; ++id){
       // 生成
-      class StudentRecord record;
+      StudentRecord record;
       record.id = id;
       record.chinese = generateGaussianScore(gen, dist);
       record.math = generateGaussianScore(gen, dist);
       record.english = generateGaussianScore(gen, dist);
       record.composite = generateGaussianScore(gen, dist);
+
+      // 存入
+      batch_records.push_back(record);
+    }
+
+    // 写入已完成map
+    {
+      std::unique_lock<std::mutex> lock(gen_finished_mutex);
+      gen_finished_work[batch_to_process.batch_id] = std::move(batch_records);
+    }
+
+    // 唤醒写入线程
+    gen_finished_cv.notify_one();
+  }
+};
+
+/* 生成数据 */
+std::vector<StudentRecord> generateAllRecordsInMemory(const int num_batches)
+{
+  // 重置全局变量
+  gen_work_done = false;
+  gen_work_queue = {};
+  gen_finished_work = {};
+
+  // 线程数与批次大小
+  const int num_threads = std::thread::hardware_concurrency();
+  const int records_per_batch = (NUM_RECORDS + num_batches - 1) / num_batches;
+
+  // 创建并分发待办任务
+  {
+    std::unique_lock<std::mutex> lock(gen_work_mutex);
+    for (int i = 0; i < num_batches; ++i) {
+      int start_id = i * records_per_batch + 1;
+      int num_records = std::min(records_per_batch, NUM_RECORDS - (start_id - 1));
+      if (num_records <= 0) break;
+
+      gen_work_queue.push({i, start_id, num_records});
+    }
+  }
+
+  // 启动工人线程
+  std::vector<std::thread> threads;
+  for (int i = 0; i < num_threads; ++i){
+    threads.emplace_back(generationWorkerThread);
+  }
+
+  // 主线程按顺序收集数据
+  std::vector<StudentRecord> all_records;
+  all_records.reserve(NUM_RECORDS);
+  int next_batch_to_collect = 0;
+
+  // 写入工作
+  while (next_batch_to_collect < num_batches) {
+    std::vector<StudentRecord> batch_data;
+    bool found_batch = false;
+
+    // 检查是否有下一批
+    {
+      std::unique_lock<std::mutex> lock(gen_finished_mutex);
+      gen_finished_cv.wait(lock, [&] {
+        return gen_finished_work.find(next_batch_to_collect) != gen_finished_work.end();
+      });
       
-      // 写入缓冲区
+      batch_data = std::move(gen_finished_work.at(next_batch_to_collect));
+      gen_finished_work.erase(next_batch_to_collect);
+      found_batch = true;
+    }
+
+    // 有，存入主vector
+    if (found_batch) {
+      all_records.insert(
+          all_records.end(),
+          std::make_move_iterator(batch_data.begin()),
+          std::make_move_iterator(batch_data.end())
+      );
+      next_batch_to_collect++;
+    }
+
+  }
+
+  // 收尾
+  {
+    std::unique_lock<std::mutex> lock(gen_work_mutex);
+    gen_work_done = true;
+  }
+  gen_work_cv.notify_all();
+
+  for (std::thread& t : threads) {
+    t.join();
+  }
+
+  return all_records;
+};
+
+
+/* 任务1.1：并行生成txt */
+struct TxtWorkBatch {
+    int batch_id;
+    size_t start_index; // all_records 中的索引
+    int num_records;
+};
+
+// TXT转换任务列表
+std::queue<TxtWorkBatch> txt_work_queue;
+std::mutex txt_work_mutex;
+std::condition_variable txt_work_cv;
+bool txt_work_done = false;
+
+// TXT转换结果列表
+std::map<int, std::string> txt_finished_work;
+std::mutex txt_finished_mutex;
+std::condition_variable txt_finished_cv;
+
+
+// TXT转换工人线程
+void txtConversionWorkerThread(const std::vector<StudentRecord>* all_records)
+{
+  while(1) {
+    TxtWorkBatch batch_to_process;
+
+    // 领取任务
+    {
+      std::unique_lock<std::mutex> lock(txt_work_mutex);
+      txt_work_cv.wait(lock, [] { return !txt_work_queue.empty() || txt_work_done; });
+
+      if (txt_work_queue.empty() && txt_work_done) {
+        return;
+      }
+
+      batch_to_process = txt_work_queue.front();
+      txt_work_queue.pop();
+    }
+
+    // 缓冲区
+    std::stringstream buffer_ss;
+    size_t end_index = batch_to_process.start_index + batch_to_process.num_records;
+
+    // 执行字符串转换
+    for (size_t i = batch_to_process.start_index; i < end_index; ++i) {
+      const StudentRecord& record = (*all_records)[i];
+           
       buffer_ss << record.id << ",";
       fast_write_float(buffer_ss, record.chinese);
       buffer_ss << ",";
@@ -153,101 +286,136 @@ void worker_thread()
       buffer_ss << "\n";
     }
 
-    // 写入已完成map
+    // 提交结果
     {
-      std::unique_lock<std::mutex> lock(finished_mutex);
-      finished_work[batch_to_process.batch_id] = buffer_ss.str();
+      std::unique_lock<std::mutex> lock(txt_finished_mutex);
+      txt_finished_work[batch_to_process.batch_id] = buffer_ss.str();
     }
-
-    // 唤醒写入线程
-    finished_cv.notify_one();
+    txt_finished_cv.notify_one();
   }
-};
+}
 
-// 创建记录并写入txt文件
-void generateRecords(const int num_batches)
+
+void generateTXT(const std::vector<StudentRecord>& all_records)
 {
-  // 计时器
-  class Timer timer;
+  // 创建文件流
+  std::ofstream txt_file(TXT_FILE);
+  if (!txt_file.is_open()) {
+    std::cerr << "错误：无法创建文件" << TXT_FILE << std::endl;
+    return;
+  }
 
-  // 线程数与批次大小
+  // 重置全局变量
+  txt_work_done = false;
+  txt_work_queue = {};
+  txt_finished_work = {};
+
+  const int num_batches = 16; // 同样分为16批
   const int num_threads = std::thread::hardware_concurrency();
   const int records_per_batch = (NUM_RECORDS + num_batches - 1) / num_batches;
 
-  // 创建并分发待办任务
+  // 分发任务
   {
-    std::unique_lock<std::mutex> lock(work_mutex);
+    std::unique_lock<std::mutex> lock(txt_work_mutex);
     for (int i = 0; i < num_batches; ++i) {
-      int start_id = i * records_per_batch + 1;
-      int num_records = std::min(records_per_batch, NUM_RECORDS - (start_id - 1));
-      if (num_records <= 0) break;
+      size_t start_index = static_cast<size_t>(i) * records_per_batch;
+      if (start_index >= all_records.size()) break;
 
-      work_queue.push({i, start_id, num_records});
+      int num_records = std::min(records_per_batch, 
+                             static_cast<int>(all_records.size() - start_index));
+
+      txt_work_queue.push({i, start_index, num_records});
     }
   }
 
   // 启动工人线程
   std::vector<std::thread> threads;
-  for (int i = 0; i < num_threads; ++i){
-    threads.emplace_back(worker_thread);
+  for (int i = 0; i < num_threads; ++i) {
+    // 传递 all_records 的指针
+    threads.emplace_back(txtConversionWorkerThread, &all_records);
   }
 
-
-  // 创建文件流
-  std::ofstream txt_file(TXT_FILE);
-  if(!txt_file.is_open()){
-    std::cerr << "错误：无法创建文件" << TXT_FILE << std::endl;
-    return;
-  }
-  int next_batch_to_write = 0;
-
-  // 写入工作
-  while (next_batch_to_write < num_batches) {
+  // 主线程按顺序收集字符串并写入文件
+  int next_batch_to_collect = 0;
+  while (next_batch_to_collect < num_batches) {
     std::string batch_data;
     bool found_batch = false;
 
     // 检查是否有下一批
     {
-      std::unique_lock<std::mutex> lock(finished_mutex);
-      finished_cv.wait(lock, [&] {
-        return finished_work.find(next_batch_to_write) != finished_work.end();
+      std::unique_lock<std::mutex> lock(txt_finished_mutex);
+      txt_finished_cv.wait(lock, [&] {
+        return txt_finished_work.find(next_batch_to_collect) != txt_finished_work.end();
       });
-      
-      batch_data = std::move(finished_work.at(next_batch_to_write));
-      finished_work.erase(next_batch_to_write);
+          
+      batch_data = std::move(txt_finished_work.at(next_batch_to_collect));
+      txt_finished_work.erase(next_batch_to_collect);
       found_batch = true;
     }
 
     // 有，写入文件
     if (found_batch) {
       txt_file << batch_data;
-      next_batch_to_write++;
+      next_batch_to_collect++;
     }
-
   }
 
   // 收尾
   {
-    std::unique_lock<std::mutex> lock(work_mutex);
-    work_done = true;
+    std::unique_lock<std::mutex> lock(txt_work_mutex);
+    txt_work_done = true;
   }
-  work_cv.notify_all();
+  txt_work_cv.notify_all();
 
   for (std::thread& t : threads) {
     t.join();
   }
 
-  // 关闭文件
   txt_file.close();
+}
 
-  // 停止计时
-  std::cout << TXT_FILE << "生成完毕，耗时：" << timer.interval() << "毫秒" << std::endl;
-};
+
+/* 任务1.2：生成dat1*/
+void generateDAT1(const std::vector<StudentRecord>& all_records)
+{
+  std::ofstream dat1_file(DAT1_FILE, std::ios::binary);
+  if (!dat1_file.is_open()) {
+    std::cerr << "错误：无法创建文件" << DAT1_FILE << std::endl;
+    return;
+  }
+
+  // 一次性写入
+  dat1_file.write(
+    reinterpret_cast<const char*>(all_records.data()),
+    all_records.size() * sizeof(StudentRecord)
+  );
+
+  dat1_file.close();
+}
 
 int main()
 {
-  // 任务1.1
-    generateRecords(16);
+  // 数据生成
+  Timer gen_timer;
+  std::vector<StudentRecord> all_records = generateAllRecordsInMemory(16);
+  double gen_time_ms = gen_timer.interval();
 
+  // 任务1.1
+  Timer timer_1_1;
+  generateTXT(all_records);
+  double write_1_1_ms = timer_1_1.interval();
+  std::cout << TXT_FILE << "生成完毕，生成数据+写入文件耗时：" << gen_time_ms << " + "
+            << write_1_1_ms << " = " << (gen_time_ms + write_1_1_ms) << "毫秒" <<
+            std::endl;
+  std::cout << "---------------------------------------------" << std::endl;
+
+  // 任务1.2
+  Timer timer_1_2;
+  generateDAT1(all_records);
+  double write_1_2_ms = timer_1_2.interval();
+  std::cout << DAT1_FILE << "生成完毕，生成数据+写入文件耗时：" << gen_time_ms << " + "
+            << write_1_2_ms << " = " << (gen_time_ms + write_1_2_ms) << "毫秒" <<
+            std::endl;
+  std::cout << "---------------------------------------------" << std::endl;
   return 0;
 }
