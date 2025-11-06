@@ -1,3 +1,4 @@
+#include "hw2-common.h"
 #include <iostream>
 #include <random>
 #include <cmath>
@@ -15,18 +16,8 @@
 #include <memory>
 #include <condition_variable>
 #include <future>
-
-// 学号
-const std::string STUDENT_ID = "2351271";
-
-// 文件名
-const std::string TXT_FILE = STUDENT_ID + "-hw2.txt";
-const std::string DAT1_FILE = STUDENT_ID + "-hw2.dat1";
-const std::string DAT2_FILE = STUDENT_ID + "-hw2.dat2";
-const std::string IDX_FILE = STUDENT_ID + "-hw2.idx";
-
-// 记录总数
-const int NUM_RECORDS = 512 * 32 * 8;
+#include <cstdint>
+#include <climits>
 
 // 并行排序的阈值
 const size_t PARALLEL_SORT_THRESHOLD = 4096; 
@@ -38,29 +29,6 @@ struct StudentRecord {
   float math;
   float english;
   float composite;
-};
-
-// 计时器
-class Timer {
-public:
-  Timer() {
-    start_time = std::chrono::steady_clock::now();
-  }
-
-  void reset() {
-    start_time = std::chrono::steady_clock::now();
-  }
-
-  double interval() {
-    std::chrono::steady_clock::time_point end_time = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::duration duration = end_time - start_time;
-
-    // double
-    std::chrono::duration<double, std::milli> duration_ms = duration;
-    return duration_ms.count();
-  }
-private:
-  std::chrono::steady_clock::time_point start_time;
 };
 
 // 快速写入器
@@ -278,7 +246,7 @@ void txtConversionWorkerThread(const std::vector<StudentRecord>* all_records)
     // 执行字符串转换
     for (size_t i = batch_to_process.start_index; i < end_index; ++i) {
       const StudentRecord& record = (*all_records)[i];
-           
+            
       buffer_ss << record.id << ",";
       fast_write_float(buffer_ss, record.chinese);
       buffer_ss << ",";
@@ -313,7 +281,7 @@ void generateTXT(const std::vector<StudentRecord>& all_records)
   txt_work_queue = {};
   txt_finished_work = {};
 
-  const int num_batches = 16; // 同样分为16批
+  const int num_batches = 16;
   const int num_threads = std::thread::hardware_concurrency();
   const int records_per_batch = (NUM_RECORDS + num_batches - 1) / num_batches;
 
@@ -325,7 +293,7 @@ void generateTXT(const std::vector<StudentRecord>& all_records)
       if (start_index >= all_records.size()) break;
 
       int num_records = std::min(records_per_batch, 
-                             static_cast<int>(all_records.size() - start_index));
+                                 static_cast<int>(all_records.size() - start_index));
 
       txt_work_queue.push({i, start_index, num_records});
     }
@@ -387,10 +355,25 @@ void generateDAT1(const std::vector<StudentRecord>& all_records)
     return;
   }
 
-  // 一次性写入
+  std::vector<PackedStudentRecord> packed_records;
+  packed_records.reserve(all_records.size());
+
+  // 遍历内存记录，转换为打包记录
+  for (const auto& record : all_records) {
+    PackedStudentRecord packed;
+    packed.id = record.id;
+    // 乘以10并四舍五入，然后转为 uint16_t
+    packed.chinese_x10  = static_cast<uint16_t>(std::round(record.chinese * 10.0f));
+    packed.math_x10     = static_cast<uint16_t>(std::round(record.math * 10.0f));
+    packed.english_x10  = static_cast<uint16_t>(std::round(record.english * 10.0f));
+    packed.composite_x10 = static_cast<uint16_t>(std::round(record.composite * 10.0f));
+    packed_records.push_back(packed);
+  }
+
+  // 一次性写入打包后的数据
   dat1_file.write(
-    reinterpret_cast<const char*>(all_records.data()),
-    all_records.size() * sizeof(StudentRecord)
+    reinterpret_cast<const char*>(packed_records.data()),
+    packed_records.size() * sizeof(PackedStudentRecord)
   );
 
   dat1_file.close();
@@ -431,7 +414,7 @@ void merge (std::vector<StudentRecord>& vec, std::vector<StudentRecord>& temp_ve
 // 归并排序
 template<typename Compare>
 void mergeSortRecursive (std::vector<StudentRecord>& vec, std::vector<StudentRecord>& temp_vec,
-                        size_t left, size_t right, Compare comp)
+                         size_t left, size_t right, Compare comp)
 {
   if (left >= right) {
     return;
@@ -456,14 +439,16 @@ void mergeSortRecursive (std::vector<StudentRecord>& vec, std::vector<StudentRec
     merge(vec, temp_vec, left, mid, right, comp);
 };
 
-void generateDAT2(const std::vector<StudentRecord>& all_records)
+// 返回排好序的 vector
+std::vector<StudentRecord> generateDAT2(const std::vector<StudentRecord>& all_records)
 {
   std::ofstream dat2_file(DAT2_FILE, std::ios::binary);
   if (!dat2_file.is_open()) {
     std::cerr << "错误：无法创建文件" << DAT2_FILE << std::endl;
-    return;
+    return {}; // 返回空 vector
   }
 
+  // 排序
   std::vector<StudentRecord> sorted_records = all_records;
   std::vector<StudentRecord> temp_vec(sorted_records.size());
 
@@ -476,12 +461,117 @@ void generateDAT2(const std::vector<StudentRecord>& all_records)
 
   mergeSortRecursive(sorted_records, temp_vec, 0, sorted_records.size()-1, compareStudents);
 
+  std::vector<PackedStudentRecord> packed_records;
+  packed_records.reserve(sorted_records.size());
+
+  // 遍历已排序的内存记录，转换为打包记录
+  for (const auto& record : sorted_records) {
+    PackedStudentRecord packed;
+    packed.id = record.id;
+    packed.chinese_x10  = static_cast<uint16_t>(std::round(record.chinese * 10.0f));
+    packed.math_x10     = static_cast<uint16_t>(std::round(record.math * 10.0f));
+    packed.english_x10  = static_cast<uint16_t>(std::round(record.english * 10.0f));
+    packed.composite_x10 = static_cast<uint16_t>(std::round(record.composite * 10.0f));
+    packed_records.push_back(packed);
+  }
+
+  // 一次性写入打包后的数据
   dat2_file.write(
-    reinterpret_cast<const char*>(sorted_records.data()),
-    sorted_records.size() * sizeof(StudentRecord)
+    reinterpret_cast<const char*>(packed_records.data()),
+    packed_records.size() * sizeof(PackedStudentRecord)
   );
 
   dat2_file.close();
+
+  // 返回排好序的 float 记录，用于生成索引
+  return sorted_records;
+}
+
+/* 任务1.4：生成idx */
+// 递归构建内部节点
+void build_tree_internal(std::vector<uint8_t>& nodes, int low, int high, int index) {
+  if (index >= NUM_INTERNAL_NODES) {
+    return;
+  }
+
+  // 分裂键
+  int mid = (low + high) / 2;
+  nodes[index] = static_cast<uint8_t>(mid); // 存为 1 字节
+
+  // 递归构建左右子树
+  build_tree_internal(nodes, low, mid, 2 * index + 1);
+  build_tree_internal(nodes, mid + 1, high, 2 * index + 2);
+}
+
+void generateIDX(const std::vector<StudentRecord>& sorted_records)
+{
+  std::ofstream idx_file(IDX_FILE, std::ios::binary);
+  if (!idx_file.is_open()) {
+    std::cerr << "错误：无法创建文件" << IDX_FILE << std::endl;
+    return;
+  }
+
+  // 创建一个临时查找表
+  std::vector<uint32_t> score_to_offset(NUM_LEAVES, UINT32_MAX);
+  
+  uint64_t current_byte_offset = 0;
+  int previous_int_score = -1;
+
+  // 遍历已排序的记录
+  for (const auto& record : sorted_records) {
+    int int_score = static_cast<int>(record.chinese);
+
+    if (int_score != previous_int_score) {
+      if (int_score >= 0 && int_score < NUM_LEAVES) {
+        if (score_to_offset[int_score] == UINT32_MAX) {
+          score_to_offset[int_score] = static_cast<uint32_t>(current_byte_offset);
+        }
+      }
+      previous_int_score = int_score;
+    }
+    current_byte_offset += sizeof(PackedStudentRecord);
+  }
+
+  // 创建树的两个分离数组
+  std::vector<uint8_t> internal_nodes(NUM_INTERNAL_NODES);
+  std::vector<uint32_t> leaf_nodes(NUM_LEAVES, UINT32_MAX);
+
+  // 填充内部节点
+  build_tree_internal(internal_nodes, 0, 100, 0); 
+
+  // 填充叶节点
+  for (int score = 0; score < NUM_LEAVES; ++score) {
+    int node_index = 0;
+    
+    // 模拟查询，找到score对应的叶节点索引
+    while (node_index < NUM_INTERNAL_NODES) {
+      uint8_t split_value = internal_nodes[node_index];
+      if (score <= split_value) {
+        node_index = 2 * node_index + 1; // 往左
+      } else {
+        node_index = 2 * node_index + 2; // 往右
+      }
+    }
+    
+    int leaf_index = node_index - NUM_INTERNAL_NODES;
+
+    if (leaf_index >= 0 && leaf_index < NUM_LEAVES) {
+      leaf_nodes[leaf_index] = score_to_offset[score];
+    }
+  }
+  
+  // 写入文件
+  idx_file.write(
+    reinterpret_cast<const char*>(internal_nodes.data()),
+    internal_nodes.size() * sizeof(uint8_t)
+  );
+
+  idx_file.write(
+    reinterpret_cast<const char*>(leaf_nodes.data()),
+    leaf_nodes.size() * sizeof(uint32_t)
+  );
+
+  idx_file.close();
 }
 
 int main()
@@ -495,27 +585,36 @@ int main()
   Timer timer_1_1;
   generateTXT(all_records);
   double write_1_1_ms = timer_1_1.interval();
-  std::cout << TXT_FILE << "生成完毕，生成数据+写入文件耗时：" << gen_time_ms << " + "
-            << write_1_1_ms << " = " << (gen_time_ms + write_1_1_ms) << "毫秒" <<
-            std::endl;
+  std::cout << TXT_FILE << "生成完毕，总耗时：" << ( gen_time_ms + write_1_1_ms) << "毫秒\n"
+            << "生成数据耗时：" << gen_time_ms << "毫秒。写入文件耗时："
+            << write_1_1_ms << "毫秒。" << std::endl;
   std::cout << "---------------------------------------------" << std::endl;
 
   // 任务1.2
   Timer timer_1_2;
   generateDAT1(all_records);
   double write_1_2_ms = timer_1_2.interval();
-  std::cout << DAT1_FILE << "生成完毕，生成数据+写入文件耗时：" << gen_time_ms << " + "
-            << write_1_2_ms << " = " << (gen_time_ms + write_1_2_ms) << "毫秒" <<
-            std::endl;
+  std::cout << DAT1_FILE << "生成完毕，总耗时：" << ( gen_time_ms + write_1_2_ms) << "毫秒\n"
+            << "生成数据耗时：" << gen_time_ms << "毫秒。写入文件耗时："
+            << write_1_2_ms << "毫秒。" << std::endl;
   std::cout << "---------------------------------------------" << std::endl;
 
   // 任务1.3
   Timer timer_1_3;
-  generateDAT2(all_records);
+  std::vector<StudentRecord> sorted_records = generateDAT2(all_records);
   double write_1_3_ms = timer_1_3.interval();
-  std::cout << DAT2_FILE << "生成完毕，生成数据+写入文件耗时：" << gen_time_ms << " + "
-            << write_1_3_ms << " = " << (gen_time_ms + write_1_3_ms) << "毫秒" <<
-            std::endl;
+  std::cout << DAT2_FILE << "生成完毕，总耗时：" << ( gen_time_ms + write_1_3_ms) << "毫秒\n"
+            << "生成数据耗时：" << gen_time_ms << "毫秒。写入文件耗时："
+            << write_1_3_ms << "毫秒。" << std::endl;
+  std::cout << "---------------------------------------------" << std::endl;
+
+  // 任务1.4
+  Timer timer_1_4;
+  generateIDX(sorted_records);
+  double write_1_4_ms = timer_1_4.interval();
+  std::cout << IDX_FILE << "生成完毕，总耗时：" << ( gen_time_ms + write_1_3_ms + write_1_4_ms) << "毫秒\n"
+            << "生成数据耗时：" << gen_time_ms << "毫秒。写入文件耗时："
+            << write_1_3_ms + write_1_4_ms << "毫秒。" << std::endl;
   std::cout << "---------------------------------------------" << std::endl;
 
   return 0;
