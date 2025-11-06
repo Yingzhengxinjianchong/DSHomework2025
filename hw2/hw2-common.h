@@ -18,6 +18,15 @@ const std::string IDX_FILE = STUDENT_ID + "-hw2.idx";
 // 记录总数
 const int NUM_RECORDS = 512 * 32 * 8;
 
+// 学生记录
+struct StudentRecord {
+  int id;
+  float chinese;
+  float math;
+  float english;
+  float composite;
+};
+
 // 用于文件写入/读取的紧凑数据结构
 #pragma pack(push, 1) // 强制1字节对齐
 struct PackedStudentRecord {
@@ -56,5 +65,42 @@ private:
 const int NUM_SCORES = 101;
 const int NUM_LEAVES = NUM_SCORES;
 const int NUM_INTERNAL_NODES = NUM_LEAVES - 1;
+const int TOTAL_NODES = NUM_LEAVES + NUM_INTERNAL_NODES;
+
+/* C/S 网络协议 */
+// 服务器端口
+const int SERVER_PORT = 23512;
+
+// 客户端→服务器的请求包
+#pragma pack(push, 1)
+struct QueryRequest {
+  uint8_t type; // 1 = 任务1.5, 2 = 任务1.6
+  float f_param1; // 任务1.5: (float)ID, 任务1.6: score_low
+  float f_param2; // 任务1.5: 不用, 任务1.6: score_high
+};
+#pragma pack(pop)
+
+// 服务器→客户端的响应包
+#pragma pack(push, 1)
+struct QueryResponse {
+  // 11 = 1.5 成功
+  // 12 = 1.6 成功
+  // 255 = 错误
+  uint8_t type;
+
+  // 16 字节的数据联合体
+  union {
+    // 任务 1.5 响应
+    float scores[4]; // [语, 数, 英, 综]
+
+    // 任务 1.6 响应
+    struct {
+      int count;
+      double average;
+    } score_result;
+    
+  } data;
+};
+#pragma pack(pop)
 
 #endif

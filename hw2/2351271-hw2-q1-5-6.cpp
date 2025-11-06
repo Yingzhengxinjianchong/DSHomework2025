@@ -8,7 +8,8 @@
 #include <algorithm>
 
 /* 任务1.5：根据学号查询dat1 */
-void queryByID() {
+void queryByID()
+{
   int target_id;
   std::string input_line;
 
@@ -77,7 +78,6 @@ void queryByID() {
 }
 
 /* 任务1.6：根据语文成绩查询dat2和idx */
-
 // 在索引中查找整数分数的byte偏移量
 uint32_t findByteOffsetForScore(int score, const std::vector<uint8_t>& internal_nodes,
                                     const std::vector<uint32_t>& leaf_nodes)
@@ -197,7 +197,8 @@ void queryByChineseScore(const std::vector<uint8_t>& internal_nodes,
   }
 }
 
-int main() {
+int main()
+{
   // 在主循环前加载索引文件
   std::vector<uint8_t> internal_nodes(NUM_INTERNAL_NODES);
   std::vector<uint32_t> leaf_nodes(NUM_LEAVES);
@@ -224,12 +225,11 @@ int main() {
   }
   
   idx_file.close();
-  std::cout << "索引文件 " << IDX_FILE << " (504 字节) 加载成功。" << std::endl;
 
   // 主菜单
   std::string choice;
   while (true) {
-    std::cout << "\n--- 查询工具主菜单 ---" << std::endl;
+    std::cout << "--- 查询工具主菜单 ---" << std::endl;
     std::cout << "1. 按学号查询 (任务 1.5)" << std::endl;
     std::cout << "2. 按语文成绩查询 (任务 1.6)" << std::endl;
     std::cout << "输入 'exit' 退出程序" << std::endl;

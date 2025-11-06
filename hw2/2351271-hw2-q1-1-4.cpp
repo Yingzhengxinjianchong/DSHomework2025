@@ -22,15 +22,6 @@
 // 并行排序的阈值
 const size_t PARALLEL_SORT_THRESHOLD = 4096; 
 
-// 学生记录
-struct StudentRecord {
-  int id;
-  float chinese;
-  float math;
-  float english;
-  float composite;
-};
-
 // 快速写入器
 inline void fast_write_float(std::stringstream& ss, float score)
 {
