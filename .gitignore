@@ -1,4 +1,6 @@
 *.log
+*.dat1
+*.dat2
 *.txt
-*.dat*
 *.idx
+*.dat
